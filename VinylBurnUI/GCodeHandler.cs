@@ -61,15 +61,13 @@ namespace VinylBurnUI
             try
             {
                 MarlinPort.DataReceived += MarlinPort_DataReceived;
-                MarlinPort.PortName = PortName;
-                MarlinPort.DataBits = 8;
-                MarlinPort.Parity = Parity.None;
-                MarlinPort.BaudRate = GenMethods.Constants.BaudRate;
+                // Use the settings from the passed serial port (already configured with user-selected baud rate)
                 MarlinPort.NewLine = "\n";
                 MarlinPort.Open();
 
-                // Wait for Marlin to initialize and send initial message
-                System.Threading.Thread.Sleep(2000);
+                // Note: Marlin needs time to initialize after connection.
+                // A brief delay helps ensure the board is ready to receive commands.
+                // For better UX, consider using a background thread for connection in future versions.
 
                 // Send initial setup commands
                 InitializeMarlin();

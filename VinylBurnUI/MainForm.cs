@@ -1110,7 +1110,7 @@ namespace VinylBurnUI
 
         private void aboutToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            MessageBox.Show("Flung together by David Nelson © 2021\nG-code/Marlin support added 2024", "Vinyl Burn");
+            MessageBox.Show("Flung together by David Nelson © 2021\nG-code/Marlin support added", "Vinyl Burn");
         }
 
         /// <summary>
