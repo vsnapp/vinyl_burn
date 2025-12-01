@@ -57,9 +57,13 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="AutoDetect.cs" />
+    <Compile Include="ConnectionSettingsForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="DataButton.cs">
       <SubType>Component</SubType>
     </Compile>
+    <Compile Include="GCodeHandler.cs" />
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>
     </Compile>

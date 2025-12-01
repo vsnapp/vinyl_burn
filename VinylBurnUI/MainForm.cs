@@ -30,6 +30,8 @@ namespace VinylBurnUI
         private bool autoDetectionComplete = false;
         private string arduinoDevice;
         private SerialHandler serialHandler;
+        private GCodeHandler gcodeHandler;
+        private bool useGCodeMode = false;
         private ToolTip toolTip;
         private int CtrlEnables;
         private string SideFileName = "";
@@ -118,6 +120,35 @@ namespace VinylBurnUI
             // Hide Main form, as we don't want to see it yet
             this.Hide();
 
+            // Show connection settings dialog
+            if (ConnectionSettingsForm.ShowConnectionDialog(this,
+                out string comPort, out int baudRate, out bool useAutoDetect))
+            {
+                if (useAutoDetect)
+                {
+                    // Use auto-detection (original behavior)
+                    PerformAutoDetection();
+                }
+                else
+                {
+                    // Use manual connection settings
+                    PerformManualConnection(comPort, baudRate);
+                }
+            }
+            else
+            {
+                // User cancelled - show form but with no connection
+                autoDetectionComplete = true;
+                this.Show();
+                tslPort.Text = "(Not connected)";
+            }
+        }
+
+        /// <summary>
+        /// Perform auto-detection of Arduino/Marlin device (original behavior).
+        /// </summary>
+        private void PerformAutoDetection()
+        {
             // Start new thread to show the Splash form
             Thread th = new Thread(new ThreadStart(ShowSplashForm));
             th.Start();
@@ -166,7 +197,64 @@ namespace VinylBurnUI
                     return;
                 }
             }
+        }
 
+        /// <summary>
+        /// Perform manual connection with specified COM port and baud rate.
+        /// Uses G-code/Marlin protocol for communication.
+        /// </summary>
+        private void PerformManualConnection(string comPort, int baudRate)
+        {
+            autoDetectionComplete = true;
+            this.Show();
+
+            // Use G-code handler for manual connections (Marlin firmware)
+            useGCodeMode = true;
+            gcodeHandler = new GCodeHandler();
+            gcodeHandler.PortName = comPort;
+
+            // Set up event handlers for G-code responses
+            gcodeHandler.MarlinDataRecd += (o, ex) =>
+            {
+                UpdateStripStatus(
+                    ex.RecdStepsTaken,
+                    ex.RecdLimitLo, ex.RecdLimitHi);
+            };
+
+            try
+            {
+                // Create a new serial port with specified settings
+                var manualPort = new System.IO.Ports.SerialPort();
+                manualPort.PortName = comPort;
+                manualPort.BaudRate = baudRate;
+                manualPort.DataBits = 8;
+                manualPort.Parity = System.IO.Ports.Parity.None;
+                manualPort.StopBits = System.IO.Ports.StopBits.One;
+
+                gcodeHandler.OpenSerial(manualPort);
+                tslPort.Text = "G-code: " + comPort + " @ " + baudRate;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not connect to " + comPort + ": " + ex.Message,
+                    "Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                tslPort.Text = "(Connection failed)";
+            }
+        }
+
+        /// <summary>
+        /// Send data to the connected device (Arduino or Marlin G-code).
+        /// </summary>
+        private void SendData(ArduinoXmitType xtype, int data)
+        {
+            if (useGCodeMode && gcodeHandler != null)
+            {
+                gcodeHandler.SendDataToMarlin(xtype, data);
+            }
+            else if (serialHandler != null)
+            {
+                serialHandler.SendDataToArduino(xtype, data);
+            }
         }
 
         /// <summary>
@@ -243,7 +331,7 @@ namespace VinylBurnUI
                 mySide.Recalculate();
 
                 // Speed to set turntable is sent in hundredths of RPM, eg 3333 for 33 1/3.
-                serialHandler?.SendDataToArduino(ArduinoXmitType.TTData, dbt.Speedx100);
+                SendData(ArduinoXmitType.TTData, dbt.Speedx100);
             }
         }
 
@@ -259,7 +347,7 @@ namespace VinylBurnUI
                 {
                     dbt.Enable();
                     // Speed to set turntable is sent in hundredths of RPM, eg 3333 for 33 1/3.
-                    serialHandler?.SendDataToArduino(ArduinoXmitType.TTData, dbt.Speedx100);
+                    SendData(ArduinoXmitType.TTData, dbt.Speedx100);
                     break;
                 }
             }
@@ -459,7 +547,7 @@ namespace VinylBurnUI
                         CurrPhase = Phase.TrackGap;
                         //CutSegment((int)mySide.Tracks[currTrackIndex].GapLPcm, mySide.Tracks[currTrackIndex].GapDurationMillisecs);
                         EndSegmentAtStepsTaken = RecdStepsTaken + mySide.Tracks[currTrackIndex].GapStepsRequired;
-                        serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, (int)mySide.Tracks[currTrackIndex].GapLPcm);
+                        SendData(ArduinoXmitType.LPcmData, (int)mySide.Tracks[currTrackIndex].GapLPcm);
                     }
                     else // If the track just ended is the last, go straight to the runout.
                     {
@@ -467,7 +555,7 @@ namespace VinylBurnUI
                         //CutSegment(RunOutTicksPerStep, RunOutDurationMillisecs);
                         EndSegmentAtStepsTaken = mySide.TotalStepsReqd;
                         //CutSegment(mySide.RunOutLPcm, mySide.RunOutDurationMillisecs);
-                        serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, (int)mySide.RunOutLPcm);
+                        SendData(ArduinoXmitType.LPcmData, (int)mySide.RunOutLPcm);
                     }
                 }
                 else
@@ -492,7 +580,7 @@ namespace VinylBurnUI
             // Prime timer to fire after duration
             tmrSegment.Interval = (int)(iDurationMillisecs);
             // Send ticks figure to Arduino
-            serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, iLPcm);
+            SendData(ArduinoXmitType.LPcmData, iLPcm);
             // Start timer
             tmrSegment.Enabled = true;
         }
@@ -509,18 +597,18 @@ namespace VinylBurnUI
                 if (mySide.AreAllTracksAssignedToValidFiles())
                 {
                     // Must zeroise step counter before starting, or cutting may end prematurely!
-                    serialHandler.SendDataToArduino(ArduinoXmitType.Command, (int)ArduinoCommand.Zeroise);
+                    SendData(ArduinoXmitType.Command, (int)ArduinoCommand.Zeroise);
                     mySide.SelectTrack(0);
                     CurrPhase = Phase.SetDown;
-                    serialHandler.SendDataToArduino(ArduinoXmitType.Command, (int)ArduinoCommand.Forward);
-                    serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, mySide.SetDownLPcm);
+                    SendData(ArduinoXmitType.Command, (int)ArduinoCommand.Forward);
+                    SendData(ArduinoXmitType.LPcmData, mySide.SetDownLPcm);
                     cmdCutRecord.Image = Properties.Resources._24x24_stop_cut;
                     toolTip.SetToolTip(cmdCutRecord, "Stop cutting record");
                     CtrlEnables = 32;
                     EnableFormControls();
                     EndSegmentAtStepsTaken = mySide.SetDownStepsRequired;
                     //CutSegment(mySide.SetDownLPcm, mySide.SetDownDurationMillisecs);
-                    //serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, (int)mySide.SetDownLPcm);
+                    //SendData(ArduinoXmitType.LPcmData, (int)mySide.SetDownLPcm);
                 }
             }
             else
@@ -528,7 +616,7 @@ namespace VinylBurnUI
                 tmrSegment.Enabled = false;
                 StopPlayingCurrentTrack();
                 CurrPhase = Phase.Idle;
-                serialHandler.SendDataToArduino(ArduinoXmitType.Command, (int)ArduinoCommand.Stop);
+                SendData(ArduinoXmitType.Command, (int)ArduinoCommand.Stop);
                 cmdCutRecord.Image = Properties.Resources._24x24_start_cut;
                 toolTip.SetToolTip(cmdCutRecord, "Start cutting record");
                 CtrlEnables = 255;
@@ -589,7 +677,7 @@ namespace VinylBurnUI
         /// <param name="e"></param>
         private void cmdZero_Click(object sender, EventArgs e)
         {
-            serialHandler.SendDataToArduino(ArduinoXmitType.Command, (int)ArduinoCommand.Zeroise);
+            SendData(ArduinoXmitType.Command, (int)ArduinoCommand.Zeroise);
         }
 
         /// <summary>
@@ -650,7 +738,7 @@ namespace VinylBurnUI
             // The following command may not be required by the Arduino (if, for example, a limit switch
             // has already triggered code on the Arduino to shut the motor off). Sending it in such cases will
             // have no effect and will do no harm.
-            serialHandler.SendDataToArduino(ArduinoXmitType.Command, (int)ArduinoCommand.Stop);
+            SendData(ArduinoXmitType.Command, (int)ArduinoCommand.Stop);
             tslEndPhaseAtStep.Text = "End phase at step: 0";
 
         }
@@ -687,8 +775,8 @@ namespace VinylBurnUI
                 CurrPhase = (iForward) ? Phase.ForwardWind : Phase.BackWind;
                 arduinoCommand = (iForward) ? (int)ArduinoCommand.ForwardWind : (int)ArduinoCommand.BackWind;
             }
-            serialHandler.SendDataToArduino(ArduinoXmitType.Command, arduinoCommand);
-            //serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, Constants.FastWindLPcm);
+            SendData(ArduinoXmitType.Command, arduinoCommand);
+            //SendData(ArduinoXmitType.LPcmData, Constants.FastWindLPcm);
         }
 
         /// <summary>
@@ -701,8 +789,8 @@ namespace VinylBurnUI
             EnableFormControls();
             CurrPhase = Phase.TestCut;
             EndSegmentAtStepsTaken = 99999; // to prevent cutting being halted!
-            serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, mySide.Tracks[mySide.CurrTrackIndex].TrackLPcm);
-            serialHandler.SendDataToArduino(ArduinoXmitType.Command, (int)ArduinoCommand.Forward);
+            SendData(ArduinoXmitType.LPcmData, mySide.Tracks[mySide.CurrTrackIndex].TrackLPcm);
+            SendData(ArduinoXmitType.Command, (int)ArduinoCommand.Forward);
 
         }
         /// <summary>
@@ -753,13 +841,13 @@ namespace VinylBurnUI
                     CurrPhase = Phase.RunIn;
                     EndSegmentAtStepsTaken = RecdStepsTaken + mySide.RunInStepsRequired;
                     //CutSegment(mySide.RunInLPcm, mySide.RunInDurationMillisecs);
-                    serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, mySide.RunInLPcm);
+                    SendData(ArduinoXmitType.LPcmData, mySide.RunInLPcm);
                     break;
                 case Phase.RunIn: // Run-in phase over; cut tight-pitch "pre-programme" spiral.
                     CurrPhase = Phase.PreProg;
                     EndSegmentAtStepsTaken = RecdStepsTaken + mySide.PreProgStepsRequired;
                     //CutSegment(mySide.RunInLPcm, mySide.RunInDurationMillisecs);
-                    serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, mySide.PreProgLPcm);
+                    SendData(ArduinoXmitType.LPcmData, mySide.PreProgLPcm);
                     break;
                 case Phase.PreProg: // Run-in phase over; cut first music track.
                     CurrPhase = Phase.MusicTrack;
@@ -767,7 +855,7 @@ namespace VinylBurnUI
                     mySide.SelectTrack(currTrackIndex);
                     EndSegmentAtStepsTaken = RecdStepsTaken + mySide.Tracks[currTrackIndex].TrackStepsRequired;
                     //CutSegment((int)mySide.Tracks[currTrackIndex].TrackLPcm, mySide.Tracks[currTrackIndex].TrackDurationMillisecs);
-                    serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, (int)mySide.Tracks[currTrackIndex].TrackLPcm);
+                    SendData(ArduinoXmitType.LPcmData, (int)mySide.Tracks[currTrackIndex].TrackLPcm);
                     StartPlayingCurrentTrack();
                     break;
                 case Phase.MusicTrack: // end of music track handled by WMP MediaEnded event.
@@ -778,7 +866,7 @@ namespace VinylBurnUI
                     mySide.SelectTrack(currTrackIndex);
                     EndSegmentAtStepsTaken = RecdStepsTaken + mySide.Tracks[currTrackIndex].TrackStepsRequired;
                     //CutSegment((int)mySide.Tracks[currTrackIndex].TrackLPcm, mySide.Tracks[currTrackIndex].TrackDurationMillisecs);
-                    serialHandler.SendDataToArduino(ArduinoXmitType.LPcmData, (int)mySide.Tracks[currTrackIndex].TrackLPcm);
+                    SendData(ArduinoXmitType.LPcmData, (int)mySide.Tracks[currTrackIndex].TrackLPcm);
                     StartPlayingCurrentTrack();
                     break;
                 case Phase.RunOut: // Run-out spiral completed; stop motor.
@@ -806,15 +894,22 @@ namespace VinylBurnUI
                     return;
                 }
             }
-            // ArduinoPort object may already have been disposed
+            // Port objects may already have been disposed
             try
             {
-                // Call Arduino to stop lathe to prevent disorderly shutdown
+                // Call to stop lathe to prevent disorderly shutdown
                 StopLathe();
             }
             catch (Exception ex) { }
-            // Close serial port
-            serialHandler.CloseSerial();
+            // Close serial port (for whichever handler is active)
+            if (useGCodeMode && gcodeHandler != null)
+            {
+                gcodeHandler.CloseSerial();
+            }
+            else if (serialHandler != null)
+            {
+                serialHandler.CloseSerial();
+            }
         }
 
         /// <summary>
@@ -1015,9 +1110,69 @@ namespace VinylBurnUI
 
         private void aboutToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            MessageBox.Show("Flung together by David Nelson © 2021", "Vinyl Burn");
+            MessageBox.Show("Flung together by David Nelson © 2021\nG-code/Marlin support added", "Vinyl Burn");
         }
 
+        /// <summary>
+        /// Connect menu item click handler.
+        /// Opens connection settings dialog to connect to a device.
+        /// </summary>
+        private void connectToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            // Close existing connection if any
+            DisconnectDevice();
+
+            // Show connection settings dialog
+            if (ConnectionSettingsForm.ShowConnectionDialog(this,
+                out string comPort, out int baudRate, out bool useAutoDetect))
+            {
+                if (useAutoDetect)
+                {
+                    PerformAutoDetection();
+                }
+                else
+                {
+                    PerformManualConnection(comPort, baudRate);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Disconnect menu item click handler.
+        /// Disconnects from the current device.
+        /// </summary>
+        private void disconnectToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            DisconnectDevice();
+            tslPort.Text = "(Not connected)";
+            MessageBox.Show("Disconnected from device.", "Connection",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        /// <summary>
+        /// Disconnect from the currently connected device.
+        /// </summary>
+        private void DisconnectDevice()
+        {
+            try
+            {
+                if (useGCodeMode && gcodeHandler != null)
+                {
+                    gcodeHandler.CloseSerial();
+                    gcodeHandler = null;
+                }
+                else if (serialHandler != null)
+                {
+                    serialHandler.CloseSerial();
+                    serialHandler = null;
+                }
+                useGCodeMode = false;
+            }
+            catch (Exception)
+            {
+                // Ignore errors during disconnect
+            }
+        }
 
     }
 }

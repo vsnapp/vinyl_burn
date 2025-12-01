@@ -20,6 +20,7 @@ namespace VinylBurnUI
     {
 
         public string PortName { get; set; }
+        public int BaudRate { get; set; } = GenMethods.Constants.BaudRate;
         public SerialPort ArduinoPort { get; set; }
         public string Hardware { get; set; }
         // Properties for acknowledged data from Arduino.
@@ -28,7 +29,7 @@ namespace VinylBurnUI
         public event EventHandler<DataRecdEventArgs> ArduinoDataRecd;
 
         /// <summary>
-        /// Opens a specified port (the one auto-detected earlier).
+        /// Opens a specified port (the one auto-detected earlier or manually selected).
         /// </summary>
         /// <param name="vSerialPort"></param>
         public void OpenSerial(SerialPort iSerialPort)
@@ -43,7 +44,7 @@ namespace VinylBurnUI
                 ArduinoPort.PortName = PortName;
                 ArduinoPort.DataBits = 8;
                 ArduinoPort.Parity = Parity.None;
-                ArduinoPort.BaudRate = GenMethods.Constants.BaudRate;
+                ArduinoPort.BaudRate = BaudRate;
                 ArduinoPort.Open();
                 //ArduinoPort.DiscardInBuffer();
             }
@@ -51,6 +52,20 @@ namespace VinylBurnUI
             {
                 throw new Exception("Could not open the Arduino on port " + PortName + ". " + e.Message);
             }
+        }
+
+        /// <summary>
+        /// Opens a serial port with manually specified settings.
+        /// </summary>
+        /// <param name="iSerialPort">Serial port object to configure.</param>
+        /// <param name="comPort">COM port name (e.g., "COM3").</param>
+        /// <param name="baudRate">Baud rate (e.g., 115200).</param>
+        public void OpenSerialManual(SerialPort iSerialPort, string comPort, int baudRate)
+        {
+            PortName = comPort;
+            BaudRate = baudRate;
+            Hardware = "Manual: " + comPort + " @ " + baudRate;
+            OpenSerial(iSerialPort);
         }
 
         private void ArduinoPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
@@ -108,7 +123,7 @@ namespace VinylBurnUI
         {
             try
             {
-                if (ArduinoPort != null && !ArduinoPort.IsOpen) ArduinoPort.Close();
+                if (ArduinoPort != null && ArduinoPort.IsOpen) ArduinoPort.Close();
             }
             catch (Exception ex)
             { }
@@ -145,6 +160,3 @@ namespace VinylBurnUI
         }
     }
 }
-
-
-
